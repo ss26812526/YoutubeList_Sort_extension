@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="head">
+    <img src="icons/icon32.png" width="22" height="22" alt="">
+    <h1>YT Playlist Sorter</h1>
+  </header>
+
+  <div class="rows">
+    <label class="row" for="enabled">
+      <span data-i18n="enabled"></span>
+      <input type="checkbox" id="enabled" class="switch" role="switch">
+    </label>
+    <label class="row" for="showBadges" id="badgesRow">
+      <span data-i18n="showBadges"></span>
+      <input type="checkbox" id="showBadges" class="switch" role="switch">
+    </label>
+    <label class="row" for="lang">
+      <span data-i18n="language"></span>
+      <select id="lang">
+        <option value="auto" data-i18n="langAuto"></option>
+        <option value="zh-TW">繁體中文</option>
+        <option value="en">English</option>
+      </select>
+    </label>
+  </div>
+
+  <p class="hint" data-i18n="hint"></p>
+
+  <script src="popup.js"></script>
+</body>
+</html>
