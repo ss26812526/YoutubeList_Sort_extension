@@ -406,3 +406,139 @@
 @keyframes ytps-spin {
   to { transform: rotate(360deg); }
 }
+
+.ytps-select-cb {
+  width: 16px;
+  height: 16px;
+  margin: 0 4px 0 0;
+  flex-shrink: 0;
+  cursor: pointer;
+  accent-color: var(--yt-spec-call-to-action, #3ea6ff);
+}
+
+.ytps-selected {
+  background: rgba(62, 166, 255, 0.12);
+  border-radius: 8px;
+}
+
+/* 多選操作列：預設在畫面上方（YouTube 頂部列下方），可在設定改到下方。
+   顏色與 YouTube 主題相反（深色主題用亮底、淺色主題用暗底），在清單上才醒目 */
+.ytps-multibar {
+  --ytps-bar-bg: var(--yt-spec-text-primary, #f1f1f1);
+  --ytps-bar-fg: var(--yt-spec-base-background, #0f0f0f);
+  position: fixed;
+  top: 68px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2300;
+  display: flex;
+  align-items: center;
+  max-width: calc(100vw - 32px);
+}
+
+.ytps-multibar.ytps-multibar-bottom {
+  top: auto;
+  bottom: 20px;
+}
+
+.ytps-multibar .ytps-multibar-open,
+.ytps-multibar-expanded .ytps-multibar-controls {
+  background: var(--ytps-bar-bg);
+  color: var(--ytps-bar-fg);
+  border: none;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+}
+
+.ytps-multibar .ytps-multibar-open {
+  font-weight: 500;
+}
+
+.ytps-multibar .ytps-multibar-open:hover {
+  background: var(--ytps-bar-bg);
+  opacity: 0.88;
+}
+
+.ytps-multibar-controls .ytps-btn-secondary {
+  background: rgba(128, 128, 128, 0.22);
+  color: inherit;
+}
+
+.ytps-multibar-controls .ytps-btn-secondary:hover {
+  background: rgba(128, 128, 128, 0.36);
+}
+
+.ytps-multibar-controls .ytps-input {
+  background: transparent;
+  color: inherit;
+  border-color: rgba(128, 128, 128, 0.6);
+}
+
+.ytps-multibar-controls {
+  display: none;
+}
+
+.ytps-multibar-expanded .ytps-multibar-open {
+  display: none;
+}
+
+.ytps-multibar-expanded .ytps-multibar-controls,
+.ytps-picker-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.ytps-picker-footer {
+  color: var(--yt-spec-text-primary, #fff);
+}
+
+.ytps-multibar-expanded .ytps-multibar-controls {
+  padding: 10px 14px;
+  border-radius: 12px;
+}
+
+.ytps-picker-footer {
+  padding-top: 10px;
+  border-top: 1px solid var(--yt-spec-10-percent-layer, rgba(255,255,255,0.1));
+}
+
+.ytps-multi-count {
+  font-weight: 700;
+  margin-right: 4px;
+}
+
+.ytps-multi-status {
+  opacity: 0.7;
+  font-size: 12px;
+}
+
+.ytps-multi-status:empty {
+  display: none;
+}
+
+.ytps-picker-footer .ytps-multi-move,
+.ytps-multibar-controls .ytps-multi-move {
+  margin-left: auto;
+}
+
+.ytps-multibar.ytps-loading .ytps-btn,
+.ytps-multibar.ytps-loading .ytps-input {
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.ytps-picker-hint {
+  font-size: 12px;
+  color: var(--yt-spec-text-secondary, #aaa);
+}
+
+.ytps-picker-selected {
+  background: rgba(62, 166, 255, 0.12);
+}
+
+.ytps-picker-target {
+  outline: 2px solid var(--yt-spec-call-to-action, #3ea6ff);
+  outline-offset: -2px;
+}

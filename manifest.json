@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YT Playlist Sorter",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "輕鬆移動 YouTube 播放清單中的影片位置",
   "permissions": ["storage"],
   "action": {

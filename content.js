@@ -14,7 +14,7 @@
   // 本檔在 MAIN world 執行，無法直接存取 chrome.storage
   const SETTINGS_ATTR = 'data-ytps-settings';
   const SETTINGS_EVENT = 'ytps-settings-changed';
-  const DEFAULT_SETTINGS = { enabled: true, showBadges: true, lang: 'auto' };
+  const DEFAULT_SETTINGS = { enabled: true, showBadges: true, lang: 'auto', multiBarPos: 'top' };
 
   function readSettings() {
     try {
@@ -59,6 +59,22 @@
       moved: '✓ 已移動到第 {0} 個',
       movedNotLoaded: '✓ 已移動到第 {0} 個（該位置尚未載入，往下捲動即可看到）',
       moveFailed: '移動失敗：{0}',
+      selectAria: '選取這部影片',
+      multiSelect: '☑ 多選',
+      multiSelectTitle: '勾選多部影片一起移動',
+      selectedCount: '已選 {0} 個',
+      clearSelection: '清除',
+      pickerMultiTitle: '勾選要移動的影片（共 {0} 部影片）',
+      pickerMultiHint: '勾選要移動的影片，再點任一列設為目標位置',
+      targetTag: '目標',
+      stepWriteCount: '寫入 YouTube（{0}/{1}）',
+      noSelection: '請先勾選要移動的影片',
+      selectionGone: '勾選的影片已不在播放清單中，請重新整理後再試',
+      multiMoved: '✓ 已將 {0} 部影片移到第 {1} 個起',
+      multiMovedReload: '✓ 已將 {0} 部影片移到第 {1} 個起（重新整理頁面即可看到最新順序）',
+      multiPartial: '已移動 {0} 部，{1} 部失敗：{2}',
+      multiMovedNotLoaded: '✓ 已將 {0} 部影片移到第 {1} 個起（該位置尚未載入，往下捲動即可看到）',
+      busy: '另一個移動正在進行，請稍候',
     },
     en: {
       moveBtnTitle: 'Move',
@@ -90,6 +106,22 @@
       moved: '✓ Moved to #{0}',
       movedNotLoaded: '✓ Moved to #{0}. Scroll down to load that part of the list.',
       moveFailed: 'Move failed: {0}',
+      selectAria: 'Select this video',
+      multiSelect: '☑ Select',
+      multiSelectTitle: 'Select several videos and move them together',
+      selectedCount: '{0} selected',
+      clearSelection: 'Clear',
+      pickerMultiTitle: 'Select videos to move ({0} videos)',
+      pickerMultiHint: 'Tick the videos to move, then click any row to set the target position',
+      targetTag: 'Target',
+      stepWriteCount: 'Save to YouTube ({0}/{1})',
+      noSelection: 'Select the videos to move first',
+      selectionGone: 'The selected videos are no longer in this playlist. Reload and try again.',
+      multiMoved: '✓ Moved {0} videos to #{1}',
+      multiMovedReload: '✓ Moved {0} videos to #{1}. Reload the page to see the new order.',
+      multiPartial: 'Moved {0}, {1} failed: {2}',
+      multiMovedNotLoaded: '✓ Moved {0} videos to #{1}. Scroll down to load that part of the list.',
+      busy: 'Another move is in progress. Please wait.',
     },
   };
 
@@ -257,6 +289,8 @@
         if (extracted) {
           if (extracted.setVideoId) {
             hasPlaylistItem = true;
+            // 保留原始資料：多選移動時，尚未載入的影片要插進 YouTube 內部清單資料需要它
+            if (child.playlistVideoRenderer) extracted.raw = child;
             if (!result.seen.has(extracted.setVideoId)) {
               result.seen.add(extracted.setVideoId);
               result.items.push(extracted);
@@ -296,6 +330,31 @@
 
   var MAX_CONTINUATION_PAGES = 200;
 
+  // 寫入後約 1～2 秒內，browse API 可能還回傳寫入前的舊順序。
+  // 記下最近一次移動的結果與移動前（含多選移動途中）的各個狀態；
+  // 讀到的順序正好是這些舊狀態之一時，改用移動後的順序。其他不同的順序（例如原生拖拉）照常採用
+  var RECENT_ORDER_TTL = 60000;
+  var recentOrder = null;
+
+  function rememberOrder(playlistId, staleOrders, newOrder) {
+    recentOrder = {
+      playlistId: playlistId,
+      stale: new Set(staleOrders.map(function (o) { return o.join(); })),
+      order: newOrder.slice(),
+      at: Date.now(),
+    };
+  }
+
+  function applyRecentOrder(playlistId, items) {
+    if (!recentOrder || recentOrder.playlistId !== playlistId) return items;
+    if (Date.now() - recentOrder.at > RECENT_ORDER_TTL) return items;
+    var fetched = items.map(function (it) { return it.setVideoId; }).join();
+    if (!recentOrder.stale.has(fetched)) return items;
+    var byId = new Map(items.map(function (it) { return [it.setVideoId, it]; }));
+    log('Stale playlist order detected, using the order after the last move');
+    return recentOrder.order.map(function (id) { return byId.get(id); });
+  }
+
   async function fetchFullPlaylist(playlistId, config) {
     var result = { items: [], seen: new Set(), continuation: null };
     var usedTokens = new Set();
@@ -329,7 +388,7 @@
     }
 
     log('Full playlist loaded:', result.items.length, 'items');
-    return result.items;
+    return applyRecentOrder(playlistId, result.items);
   }
 
   async function moveVideo(playlistId, setVideoId, predecessorSetVideoId, config) {
@@ -474,6 +533,22 @@
     wrapper.style.position = 'relative';
     wrapper.style.display = 'inline-flex';
     wrapper.style.alignItems = 'center';
+
+    // 多選勾選框：Polymer 會重用節點，勾選狀態一律以點擊當下的 setVideoId 為準，再由 syncSelectionUi() 同步
+    var selectBox = document.createElement('input');
+    selectBox.type = 'checkbox';
+    selectBox.className = 'ytps-select-cb';
+    selectBox.setAttribute('aria-label', tr('selectAria'));
+    selectBox.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var data = getItemData(itemEl);
+      if (!data?.setVideoId) {
+        selectBox.checked = false;
+        return;
+      }
+      setSelected(data.setVideoId, selectBox.checked);
+    });
+    wrapper.appendChild(selectBox);
     wrapper.appendChild(btn);
     wrapper.appendChild(panel);
 
@@ -542,8 +617,10 @@
     }
   }
 
-  // 彈出完整播放清單（透過 API 取得，不受頁面懶載入限制），點選任一列即回傳該位置編號
-  async function openPositionPicker(currentSetVideoId, onPick) {
+  // 彈出完整播放清單（透過 API 取得，不受頁面懶載入限制）。
+  // 單選模式：點選任一列即回傳該位置編號。
+  // 多選模式（multi = true）：每列有勾選框，點任一列設為目標位置，按底部「移動」執行
+  async function openPositionPicker(currentSetVideoId, onPick, multi) {
     closePositionPicker();
     var config = getYtConfig();
     var playlistId = getPlaylistId();
@@ -561,7 +638,7 @@
     header.className = 'ytps-picker-header';
     var titleEl = document.createElement('span');
     titleEl.className = 'ytps-picker-title';
-    titleEl.textContent = tr('pickerTitle');
+    titleEl.textContent = multi ? tr('multiSelectTitle') : tr('pickerTitle');
     var closeBtn = document.createElement('button');
     closeBtn.className = 'ytps-picker-close';
     closeBtn.textContent = '✕';
@@ -582,11 +659,25 @@
     listEl.appendChild(status);
 
     box.appendChild(header);
+    if (multi) {
+      var hint = document.createElement('div');
+      hint.className = 'ytps-picker-hint';
+      hint.textContent = tr('pickerMultiHint');
+      box.appendChild(hint);
+    }
     box.appendChild(search);
     box.appendChild(listEl);
+
+    var footer = null;
+    if (multi) {
+      footer = createMultiControls(true);
+      box.appendChild(footer.el);
+    }
+
     overlay.appendChild(box);
     document.body.appendChild(overlay);
     pickerEl = overlay;
+    pickerEl._ytpsFooter = footer;
 
     overlay.addEventListener('click', function (e) {
       e.stopPropagation();
@@ -615,13 +706,42 @@
       return;
     }
 
-    titleEl.textContent = tr('pickerTitleCount', fullList.length);
+    titleEl.textContent = multi ? tr('pickerMultiTitle', fullList.length) : tr('pickerTitleCount', fullList.length);
     var frag = document.createDocumentFragment();
     var rows = [];
     var currentRow = null;
+    var targetRow = null;
+    var targetTag = document.createElement('span');
+    targetTag.className = 'ytps-picker-tag';
+    targetTag.textContent = tr('targetTag');
+
+    function markTarget(row) {
+      if (targetRow) targetRow.classList.remove('ytps-picker-target');
+      targetTag.remove();
+      targetRow = row;
+      if (row) {
+        row.classList.add('ytps-picker-target');
+        row.appendChild(targetTag);
+      }
+    }
+
     fullList.forEach(function (item, i) {
       var row = document.createElement('div');
       row.className = 'ytps-picker-row';
+      if (multi) {
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'ytps-select-cb';
+        cb.setAttribute('aria-label', tr('selectAria'));
+        cb.checked = selection.has(item.setVideoId);
+        row.classList.toggle('ytps-picker-selected', cb.checked);
+        cb.addEventListener('click', function (e) {
+          e.stopPropagation();
+          setSelected(item.setVideoId, cb.checked);
+          row.classList.toggle('ytps-picker-selected', cb.checked);
+        });
+        row.appendChild(cb);
+      }
       var num = document.createElement('span');
       num.className = 'ytps-picker-num';
       num.textContent = i + 1;
@@ -643,7 +763,7 @@
       row.appendChild(num);
       row.appendChild(thumb);
       row.appendChild(text);
-      if (item.setVideoId === currentSetVideoId) {
+      if (!multi && item.setVideoId === currentSetVideoId) {
         row.classList.add('ytps-picker-current');
         var tag = document.createElement('span');
         tag.className = 'ytps-picker-tag';
@@ -652,6 +772,13 @@
         currentRow = row;
       }
       row.addEventListener('click', function () {
+        if (multi) {
+          footer.input.value = i + 1;
+          // 觸發 input 事件，讓上方操作列的位置欄同步
+          footer.input.dispatchEvent(new Event('input'));
+          markTarget(row);
+          return;
+        }
         closePositionPicker();
         onPick(i + 1);
       });
@@ -661,6 +788,15 @@
     listEl.textContent = '';
     listEl.appendChild(frag);
     if (currentRow) currentRow.scrollIntoView({ block: 'center' });
+
+    if (multi) {
+      var preset = parseInt(footer.input.value, 10);
+      if (preset >= 1 && preset <= rows.length) markTarget(rows[preset - 1].el);
+      footer.input.addEventListener('input', function () {
+        var n = parseInt(footer.input.value, 10);
+        markTarget(n >= 1 && n <= rows.length ? rows[n - 1].el : null);
+      });
+    }
 
     search.addEventListener('input', function () {
       var q = search.value.trim().toLowerCase();
@@ -723,6 +859,9 @@
       if (b.parentElement) b.parentElement.remove();
     });
     removeIndexBadges();
+    removeMultiBar();
+    selection.clear();
+    document.querySelectorAll('.ytps-selected').forEach(function (el) { el.classList.remove('ytps-selected'); });
     if (toastEl) toastEl.classList.remove('show');
   }
 
@@ -818,7 +957,7 @@
       if (Math.abs(delta) < 1) return;
       el.style.transition = 'none';
       el.style.transform = 'translateY(' + delta + 'px)';
-      if (id === movedId) el.classList.add('ytps-moving');
+      if (movedId instanceof Set ? movedId.has(id) : id === movedId) el.classList.add('ytps-moving');
       animated.push(el);
     });
     if (animated.length === 0) return;
@@ -928,6 +1067,12 @@
       return;
     }
 
+    if (isMoving()) {
+      showToast(tr('busy'));
+      return;
+    }
+    singleBusy = true;
+
     log('handleMove:', itemData.title, '-> position', targetPos);
 
     panel.classList.add('ytps-loading');
@@ -987,6 +1132,10 @@
 
       setProgress(panel, 1);
       await moveVideo(playlistId, itemData.setVideoId, predecessorSetVideoId, config);
+      var orderBefore = fullList.map(function (it) { return it.setVideoId; });
+      var orderAfter = listWithout.map(function (it) { return it.setVideoId; });
+      orderAfter.splice(targetPos - 1, 0, itemData.setVideoId);
+      rememberOrder(playlistId, [orderBefore], orderAfter);
 
       progressDone = true;
       showToast(tr('moved', targetPos), 2000);
@@ -999,10 +1148,423 @@
       setProgress(panel, -1);
       progressDone = true;
     } finally {
+      singleBusy = false;
       if (!progressDone) setProgress(panel, null);
       panel.classList.remove('ytps-loading');
       confirmBtn.textContent = origText;
     }
+  }
+
+  // ---- 多選移動 ----
+  // 勾選狀態以 setVideoId 記錄，頁面上的勾選框與完整清單視窗共用同一份
+  var selection = new Set();
+  var selectionPlaylistId = null;
+  var multiBar = null;
+  var multiBusy = false;
+  var singleBusy = false;
+
+  function isMoving() {
+    return multiBusy || singleBusy;
+  }
+
+  function setSelected(setVideoId, on) {
+    if (on) selection.add(setVideoId);
+    else selection.delete(setVideoId);
+    syncSelectionUi();
+  }
+
+  function clearSelection() {
+    selection.clear();
+    if (pickerEl) {
+      pickerEl.querySelectorAll('.ytps-picker-row .ytps-select-cb').forEach(function (cb) {
+        cb.checked = false;
+        cb.closest('.ytps-picker-row').classList.remove('ytps-picker-selected');
+      });
+    }
+    syncSelectionUi();
+  }
+
+  // 依勾選狀態更新頁面勾選框、列的底色與操作列；只在值有變時寫入，避免觸發 MutationObserver
+  function syncSelectionUi() {
+    document.querySelectorAll(SELECTOR_ITEM).forEach(function (itemEl) {
+      var cb = itemEl.querySelector('.ytps-select-cb');
+      if (!cb) return;
+      var on = selection.has(getItemData(itemEl)?.setVideoId);
+      if (cb.checked !== on) cb.checked = on;
+      if (itemEl.classList.contains('ytps-selected') !== on) itemEl.classList.toggle('ytps-selected', on);
+    });
+    var controls = [multiBar && multiBar._ytps, pickerEl && pickerEl._ytpsFooter];
+    controls.forEach(function (c) {
+      if (!c) return;
+      var text = tr('selectedCount', selection.size);
+      if (c.countEl.textContent !== text) c.countEl.textContent = text;
+    });
+    if (multiBar) {
+      var expanded = selection.size > 0 || multiBusy;
+      if (multiBar.classList.contains('ytps-multibar-expanded') !== expanded) {
+        multiBar.classList.toggle('ytps-multibar-expanded', expanded);
+      }
+    }
+  }
+
+  // 「已選 N 個｜放到第 [ ] 個｜…｜清除｜移動」：底部操作列與完整清單視窗底部共用
+  function createMultiControls(inPicker) {
+    var el = document.createElement('div');
+    el.className = inPicker ? 'ytps-picker-footer' : 'ytps-multibar-controls';
+
+    var countEl = document.createElement('span');
+    countEl.className = 'ytps-multi-count';
+    countEl.textContent = tr('selectedCount', selection.size);
+
+    var label = document.createElement('span');
+    label.className = 'ytps-multi-label';
+    label.textContent = tr('moveToBefore');
+    var input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'ytps-input';
+    input.min = '1';
+    input.placeholder = '#';
+    var labelAfter = document.createElement('span');
+    labelAfter.className = 'ytps-multi-label';
+    labelAfter.textContent = tr('moveToAfter');
+    labelAfter.hidden = !labelAfter.textContent;
+
+    var status = document.createElement('span');
+    status.className = 'ytps-multi-status';
+
+    var clearBtn = document.createElement('button');
+    clearBtn.className = 'ytps-btn ytps-btn-secondary';
+    clearBtn.textContent = tr('clearSelection');
+    var moveBtn = document.createElement('button');
+    moveBtn.className = 'ytps-btn ytps-btn-primary ytps-multi-move';
+    moveBtn.textContent = tr('confirm');
+
+    el.appendChild(countEl);
+    el.appendChild(label);
+    el.appendChild(input);
+    el.appendChild(labelAfter);
+    var pickBtn = null;
+    var topBtn = null;
+    if (!inPicker) {
+      pickBtn = document.createElement('button');
+      pickBtn.className = 'ytps-btn ytps-btn-secondary';
+      pickBtn.textContent = '📋';
+      pickBtn.title = tr('pickFromList');
+      pickBtn.setAttribute('aria-label', tr('pickFromList'));
+      topBtn = document.createElement('button');
+      topBtn.className = 'ytps-btn ytps-btn-secondary';
+      topBtn.textContent = tr('moveToTop');
+      el.appendChild(pickBtn);
+      el.appendChild(topBtn);
+    }
+    el.appendChild(status);
+    el.appendChild(clearBtn);
+    el.appendChild(moveBtn);
+
+    var controls = { el: el, countEl: countEl, input: input, status: status, moveBtn: moveBtn };
+
+    // 兩組輸入框同步目標位置；操作列可能在視窗開著時重建，每次都重新取得
+    function barInput() {
+      return multiBar && multiBar._ytps && multiBar._ytps.input;
+    }
+    if (inPicker && barInput()) input.value = barInput().value;
+    input.addEventListener('input', function () {
+      input.style.borderColor = '';
+      if (inPicker && barInput()) barInput().value = input.value;
+    });
+
+    function submit(target) {
+      if (selection.size === 0) {
+        showToast(tr('noSelection'));
+        return;
+      }
+      if (!target || target < 1) {
+        input.style.borderColor = '#f44';
+        return;
+      }
+      if (isMoving()) {
+        showToast(tr('busy'));
+        return;
+      }
+      if (inPicker) closePositionPicker();
+      handleMultiMove(target);
+    }
+
+    clearBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      clearSelection();
+    });
+    moveBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      submit(parseInt(input.value, 10));
+    });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submit(parseInt(input.value, 10));
+      }
+    });
+    if (pickBtn) {
+      pickBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        openPositionPicker(null, null, true);
+      });
+    }
+    if (topBtn) {
+      topBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        submit(1);
+      });
+    }
+    return controls;
+  }
+
+  // 底部浮動操作列：未勾選時只顯示「☑ 多選」，有勾選時展開
+  function ensureMultiBar() {
+    if (multiBar && multiBar.isConnected) return;
+    multiBar = document.createElement('div');
+    multiBar.className = 'ytps-multibar';
+    var openBtn = document.createElement('button');
+    openBtn.className = 'ytps-btn ytps-btn-secondary ytps-multibar-open';
+    openBtn.textContent = tr('multiSelect');
+    openBtn.title = tr('multiSelectTitle');
+    openBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      openPositionPicker(null, null, true);
+    });
+    multiBar.appendChild(openBtn);
+    multiBar._ytps = createMultiControls(false);
+    multiBar.appendChild(multiBar._ytps.el);
+    applyMultiBarPos();
+    document.body.appendChild(multiBar);
+  }
+
+  function applyMultiBarPos() {
+    if (!multiBar) return;
+    var bottom = settings.multiBarPos === 'bottom';
+    if (multiBar.classList.contains('ytps-multibar-bottom') !== bottom) {
+      multiBar.classList.toggle('ytps-multibar-bottom', bottom);
+    }
+  }
+
+  function removeMultiBar() {
+    if (multiBar) multiBar.remove();
+    multiBar = null;
+  }
+
+  function setMultiStatus(text) {
+    if (!multiBar) return;
+    multiBar._ytps.status.textContent = text || '';
+  }
+
+  // 依序套用移動（setVideoId 移到 predecessor 之後，null 表示移到最前面），回傳新順序
+  function applyMoves(order, moves) {
+    var result = order.slice();
+    moves.forEach(function (m) {
+      result.splice(result.indexOf(m.id), 1);
+      var at = m.after ? result.indexOf(m.after) + 1 : 0;
+      result.splice(at, 0, m.id);
+    });
+    return result;
+  }
+
+  // 規劃多選移動。targetPos 是目前清單（含已勾選影片）的編號，意思是「放到目前第 targetPos 個的位置」：
+  // 已勾選的影片接在第 targetPos 個之前最後一部未勾選影片的後面，並維持原本的先後順序
+  function planMultiMove(order, selected, targetPos) {
+    var picked = order.filter(function (id) { return selected.has(id); });
+    var prev = null;
+    for (var i = Math.min(targetPos, order.length + 1) - 2; i >= 0; i--) {
+      if (!selected.has(order[i])) {
+        prev = order[i];
+        break;
+      }
+    }
+    var moves = picked.map(function (id) {
+      var m = { id: id, after: prev };
+      prev = id;
+      return m;
+    });
+    return { picked: picked, moves: moves };
+  }
+
+  // 把 YouTube 內部清單資料改成新順序（只處理已載入的範圍）。
+  // 回傳 { ok, missing, beyond }：missing 表示有影片應出現在已載入範圍內，但缺少可插入的資料；
+  // beyond 表示有影片移到尚未載入的範圍，畫面上暫時看不到
+  function reorderModel(listEl, newOrder, rawById, movedIds) {
+    var ctrl = listEl && (listEl.polymerController || listEl);
+    var contents = listEl && listEl.data && listEl.data.contents;
+    if (!ctrl || typeof ctrl.splice !== 'function' || !Array.isArray(contents)) return { ok: false };
+
+    var loaded = contents.filter(function (c) { return c.playlistVideoRenderer; });
+    var loadedIds = loaded.map(function (c) { return c.playlistVideoRenderer.setVideoId; });
+    var hasMore = contents.some(function (c) { return c.continuationItemRenderer; });
+    var entryById = new Map();
+    loaded.forEach(function (c) { entryById.set(c.playlistVideoRenderer.setVideoId, c); });
+
+    // 新的已載入範圍：清單已全部載入時取整份；否則取到原本已載入、且沒被移動的最後一部影片為止，
+    // 之後的部分交給捲動續載
+    var newPrefix;
+    if (!hasMore) {
+      newPrefix = newOrder;
+    } else {
+      var lastKeep = -1;
+      loadedIds.forEach(function (id) {
+        if (movedIds.has(id)) return;
+        lastKeep = Math.max(lastKeep, newOrder.indexOf(id));
+      });
+      newPrefix = newOrder.slice(0, lastKeep + 1);
+    }
+
+    // 先移除所有被移動的影片，再依新順序由前往後插入
+    for (var i = contents.length - 1; i >= 0; i--) {
+      var pvr = contents[i].playlistVideoRenderer;
+      if (pvr && movedIds.has(pvr.setVideoId)) ctrl.splice('data.contents', i, 1);
+    }
+    var missing = false;
+    var beyond = false;
+    movedIds.forEach(function (id) {
+      if (newPrefix.indexOf(id) === -1) beyond = true;
+    });
+    var offset = 0;
+    newPrefix.forEach(function (id, idx) {
+      if (!movedIds.has(id)) return;
+      var entry = entryById.get(id) || rawById.get(id);
+      if (!entry) {
+        missing = true;
+        offset++;
+        return;
+      }
+      ctrl.splice('data.contents', idx - offset, 0, entry);
+    });
+    return { ok: true, missing: missing, beyond: beyond };
+  }
+
+  async function handleMultiMove(targetPos) {
+    if (isMoving()) {
+      showToast(tr('busy'));
+      return;
+    }
+    var config = getYtConfig();
+    var playlistId = getPlaylistId();
+    if (!config?.apiKey || !config?.context) {
+      showToast(tr('noApi'));
+      return;
+    }
+    if (!playlistId) {
+      showToast(tr('noPlaylistId'));
+      return;
+    }
+
+    // 移動期間可能換頁，先記下目前的清單元件，結束時確認仍是同一份清單才更新畫面
+    var listEl = document.querySelector('ytd-playlist-video-list-renderer');
+    multiBusy = true;
+    if (multiBar) multiBar.classList.add('ytps-loading');
+    syncSelectionUi();
+    var done = 0;
+    var total = 0;
+    var retryTarget = '';
+    try {
+      setMultiStatus(tr('stepFetch') + '…');
+      var fullList = await fetchFullPlaylist(playlistId, config);
+      if (fullList.length === 0) {
+        showToast(tr('playlistEmpty'));
+        return;
+      }
+      var order = fullList.map(function (it) { return it.setVideoId; });
+      var picked = order.filter(function (id) { return selection.has(id); });
+      // 已不在清單中的勾選（例如在別處刪除）直接捨棄
+      selection.forEach(function (id) { if (picked.indexOf(id) === -1) selection.delete(id); });
+      if (picked.length === 0) {
+        showToast(tr('selectionGone'));
+        return;
+      }
+
+      var moves = planMultiMove(order, selection, Math.max(targetPos, 1)).moves;
+
+      var finalOrder = applyMoves(order, moves);
+      if (finalOrder.join() === order.join()) {
+        showToast(tr('alreadyThere'));
+        clearSelection();
+        return;
+      }
+
+      total = moves.length;
+      var succeeded = [];
+      var failure = null;
+      for (var i = 0; i < moves.length; i++) {
+        setMultiStatus(tr('stepWriteCount', i + 1, total) + '…');
+        try {
+          await moveVideo(playlistId, moves[i].id, moves[i].after, config);
+          succeeded.push(moves[i]);
+          done++;
+        } catch (err) {
+          failure = err;
+          break;
+        }
+      }
+      if (succeeded.length === 0) throw failure;
+
+      var newOrder = applyMoves(order, succeeded);
+      var staleOrders = [order];
+      for (var k = 1; k < succeeded.length; k++) staleOrders.push(applyMoves(order, succeeded.slice(0, k)));
+      rememberOrder(playlistId, staleOrders, newOrder);
+      var rawById = new Map();
+      fullList.forEach(function (it) { if (it.raw) rawById.set(it.setVideoId, it.raw); });
+      var movedIds = new Set(succeeded.map(function (m) { return m.id; }));
+      var landedPos = newOrder.indexOf(succeeded[0].id) + 1;
+
+      var samePage = getPlaylistId() === playlistId && listEl && listEl.isConnected;
+      var before = snapshotPositions();
+      var result = samePage ? reorderModel(listEl, newOrder, rawById, movedIds) : { ok: false };
+      // 成功移動的取消勾選，失敗的保持勾選以便重試
+      movedIds.forEach(function (id) { selection.delete(id); });
+
+      if (failure) {
+        // 重試時接在最後一部已移動的影片後面，維持原本的先後順序
+        retryTarget = String(newOrder.indexOf(succeeded[succeeded.length - 1].id) + 2);
+        showToast(tr('multiPartial', succeeded.length, total - succeeded.length, failure.message), 5000);
+      } else if (!samePage) {
+        showToast(tr('multiMoved', succeeded.length, landedPos), 2500);
+      } else if (!result.ok || result.missing) {
+        showToast(tr('multiMovedReload', succeeded.length, landedPos), 4000);
+      } else if (result.beyond) {
+        updateIndexBadges();
+        showToast(tr('multiMovedNotLoaded', succeeded.length, landedPos), 4000);
+      } else {
+        showToast(tr('multiMoved', succeeded.length, landedPos), 2500);
+      }
+      if (result.ok) animateMultiMove(before, movedIds);
+    } catch (err) {
+      logError('Multi move failed:', err);
+      showToast(tr('moveFailed', err.message), 5000);
+    } finally {
+      multiBusy = false;
+      setMultiStatus('');
+      if (multiBar) multiBar.classList.remove('ytps-loading');
+      if (multiBar && done > 0) multiBar._ytps.input.value = retryTarget;
+      syncSelectionUi();
+    }
+  }
+
+  // 等重繪後播放動畫：移動的影片在畫面內就滑動，否則捲到第一部落點；所有落點閃爍外框
+  function animateMultiMove(before, movedIds) {
+    setTimeout(function () {
+      updateIndexBadges();
+      syncSelectionUi();
+      var landed = getAllLoadedItems().filter(function (el) {
+        return movedIds.has(getItemData(el)?.setVideoId);
+      });
+      if (landed.length === 0) return;
+      var first = landed[0];
+      var visible = isInViewport(first.getBoundingClientRect());
+      if (visible && !prefersReducedMotion()) {
+        playFlip(before, movedIds);
+        setTimeout(function () { landed.forEach(flashLanded); }, ANIM_DURATION);
+      } else {
+        if (!visible) first.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' });
+        landed.forEach(flashLanded);
+      }
+    }, 50);
   }
 
   function injectButtons() {
@@ -1014,8 +1576,15 @@
     injecting = true;
     try {
       var items = getAllLoadedItems();
+      // 換到另一份播放清單時清除勾選
+      if (selectionPlaylistId !== getPlaylistId()) {
+        selectionPlaylistId = getPlaylistId();
+        selection.clear();
+      }
       items.forEach(function (item) { createMoveButton(item); });
       updateIndexBadges();
+      ensureMultiBar();
+      syncSelectionUi();
     } finally {
       injecting = false;
     }
@@ -1023,7 +1592,7 @@
 
   document.addEventListener('click', function (e) {
     if (!e.target.closest('.ytps-move-btn') && !e.target.closest('.ytps-panel') &&
-        !e.target.closest('.ytps-picker-overlay')) {
+        !e.target.closest('.ytps-picker-overlay') && !e.target.closest('.ytps-multibar')) {
       closeAllPanels();
     }
   });
@@ -1053,6 +1622,7 @@
     } else if (prev.showBadges && !settings.showBadges) {
       removeIndexBadges();
     }
+    applyMultiBarPos();
     injectButtons();
   }
 
@@ -1079,8 +1649,12 @@
   setInterval(function () {
     if (window.location.href !== lastUrl) {
       lastUrl = window.location.href;
+      // 換頁時先移除操作列，回到自己的播放清單時由 injectButtons() 重建
+      removeMultiBar();
       if (isPlaylistPage()) {
         setTimeout(injectButtons, 1000);
+      } else {
+        closeAllPanels();
       }
     }
   }, CHECK_INTERVAL);
