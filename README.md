@@ -1,5 +1,7 @@
 # YT Playlist Sorter
 
+繁體中文 | [English](README.en.md)
+
 Chrome / Edge 通用的瀏覽器擴充功能，改善 YouTube 播放清單的歌曲排序體驗。
 
 ## 解決的問題
